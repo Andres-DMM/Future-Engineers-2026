@@ -28,13 +28,13 @@ Servo steeringServo;
 
 int anguloServo = 90;
 
-const int ANGULO_CENTRO = 90;
+const int ANGULO_CENTRO = 89;
 
-// Primer movimiento
-const int ANGULO_PRIMER_GIRO = 45;
+// Azul / ID2
+const int ANGULO_PRIMER_GIRO = 43;
 
-// Segundo movimiento
-const int ANGULO_SEGUNDO_GIRO = 25;
+// Naranja / ID4
+const int ANGULO_SEGUNDO_GIRO = 23;
 
 
 // =====================================================
@@ -51,15 +51,23 @@ const int ECHO_DER = 11;
 
 
 // =====================================================
-// DISTANCIAS
+// DISTANCIA MÍNIMA
 // =====================================================
 
-// Distancia mínima antes de considerar que está
-// demasiado cerca de una pared/objeto.
-//
-// Ajusta este valor según la pista.
-
 const int DISTANCIA_MINIMA = 15;
+
+
+// =====================================================
+// CORRECCIONES ULTRASÓNICAS
+// =====================================================
+
+// Si hay algo a la izquierda,
+// giramos rápidamente hacia la derecha.
+const int CORRECCION_DERECHA = 113;
+
+// Si hay algo a la derecha,
+// giramos rápidamente hacia la izquierda.
+const int CORRECCION_IZQUIERDA = 67;
 
 
 // =====================================================
@@ -77,15 +85,20 @@ const int VEL_REVERSA = 70;
 // TIEMPOS
 // =====================================================
 
-// Después de detectar ID2 tenemos aproximadamente
-// 3 segundos para encontrar ID4.
-
+// Tiempo máximo buscando naranja después del azul.
 const unsigned long TIEMPO_BUSCAR_ID4 = 3000;
 
+// Tiempo de recuperación.
+const unsigned long TIEMPO_REVERSA = 1800;
 
-// Cuánto tiempo retroceder cuando no encontramos ID4.
 
-const unsigned long TIEMPO_REVERSA = 700;
+// =====================================================
+// ULTRASÓNICOS MÁS RÁPIDOS
+// =====================================================
+
+const unsigned long INTERVALO_ULTRASONICOS = 30;
+
+unsigned long ultimoUltrasonico = 0;
 
 
 // =====================================================
@@ -96,13 +109,13 @@ enum Estado {
 
   RECTO,
 
-  // ID2 detectado
+  // ID2 azul detectado
   GIRO_INICIAL,
 
-  // Ya está en 45° buscando ID4
+  // Servo a 45°, buscando ID4
   BUSCANDO_ID4,
 
-  // ID4 detectado
+  // ID4 naranja detectado
   SEGUNDO_GIRO,
 
   // Mantener 25°
@@ -111,110 +124,77 @@ enum Estado {
   // Regresar a 90°
   REGRESANDO,
 
-  // Recuperación porque no encontró ID4
+  // No encontró ID4
   RECUPERACION
-
 };
 
 Estado estado = RECTO;
 
 
 // =====================================================
-// TIEMPOS
+// TIEMPO DEL ESTADO
 // =====================================================
 
 unsigned long tiempoEstado = 0;
 
 
 // =====================================================
-// ULTRASÓNICOS
+// MEDIR DISTANCIA
 // =====================================================
 
 long medirDistancia(int trigPin, int echoPin) {
 
-  // Limpiar trigger
   digitalWrite(trigPin, LOW);
 
   delayMicroseconds(2);
 
-  // Pulso de 10 us
   digitalWrite(trigPin, HIGH);
 
   delayMicroseconds(10);
 
   digitalWrite(trigPin, LOW);
 
-
-  // Medir eco
   long duracion =
-    pulseIn(echoPin, HIGH, 25000);
+    pulseIn(echoPin, HIGH, 12000);
 
-
-  // Si no recibió eco
+  // Sin eco
   if (duracion == 0) {
-
     return 999;
   }
 
-
-  // Convertir a centímetros
   long distancia =
     duracion * 0.0343 / 2;
-
 
   return distancia;
 }
 
 
 // =====================================================
-// CORRECCIÓN POR OBSTÁCULOS
-// =====================================================
-//
-// Si está demasiado cerca del lado izquierdo:
-//
-//     pared
-//       |
-//       |  ROBOT
-//       |    →
-//       |
-//
-// Se corrige hacia la derecha.
-//
-//
-//
-// Si está demasiado cerca del lado derecho:
-//
-// se corrige hacia la izquierda.
-//
+// CONTROL DE ULTRASÓNICOS
 // =====================================================
 
-bool corregirObstaculo() {
+void controlarUltrasonicos() {
 
   long distanciaIzq =
     medirDistancia(TRIG_IZQ, ECHO_IZQ);
 
-
-  // Pequeño delay para no disparar ambos ultrasónicos
-  // prácticamente al mismo tiempo.
-
-  delayMicroseconds(500);
-
+  delayMicroseconds(300);
 
   long distanciaDer =
     medirDistancia(TRIG_DER, ECHO_DER);
 
 
-  // Mostrar ocasionalmente las distancias
+  // Mostrar distancias cada 250 ms
   static unsigned long ultimoPrint = 0;
 
-  if (millis() - ultimoPrint > 250) {
+  if (millis() - ultimoPrint >= 250) {
 
     ultimoPrint = millis();
 
-    Serial.print("Izq: ");
+    Serial.print("IZQ: ");
     Serial.print(distanciaIzq);
 
-    Serial.print(" cm | Der: ");
+    Serial.print(" cm | DER: ");
     Serial.print(distanciaDer);
 
     Serial.println(" cm");
@@ -222,49 +202,79 @@ bool corregirObstaculo() {
 
 
   // ===================================================
-  // DEMASIADO CERCA DE LA IZQUIERDA
+  // OBSTÁCULO A LA IZQUIERDA
   // ===================================================
 
-  if (distanciaIzq < DISTANCIA_MINIMA) {
+  if (distanciaIzq < DISTANCIA_MINIMA &&
+      distanciaDer >= DISTANCIA_MINIMA) {
 
-    Serial.println("MUY CERCA IZQUIERDA -> CORRIGIENDO DERECHA");
+    Serial.println(
+      "OBSTACULO IZQ -> GIRANDO DERECHA"
+    );
 
+    steeringServo.write(CORRECCION_DERECHA);
 
-    // Girar dirección hacia la derecha
-    steeringServo.write(115);
+    anguloServo = CORRECCION_DERECHA;
 
-    anguloServo = 115;
-
-
-    return true;
+    return;
   }
 
 
   // ===================================================
-  // DEMASIADO CERCA DE LA DERECHA
+  // OBSTÁCULO A LA DERECHA
   // ===================================================
 
-  if (distanciaDer < DISTANCIA_MINIMA) {
+  if (distanciaDer < DISTANCIA_MINIMA &&
+      distanciaIzq >= DISTANCIA_MINIMA) {
 
-    Serial.println("MUY CERCA DERECHA -> CORRIGIENDO IZQUIERDA");
+    Serial.println(
+      "OBSTACULO DER -> GIRANDO IZQUIERDA"
+    );
 
+    steeringServo.write(CORRECCION_IZQUIERDA);
 
-    // Girar dirección hacia la izquierda
-    steeringServo.write(65);
+    anguloServo = CORRECCION_IZQUIERDA;
 
-    anguloServo = 65;
-
-
-    return true;
+    return;
   }
 
 
-  return false;
+  // ===================================================
+  // OBSTÁCULOS A LOS DOS LADOS
+  // ===================================================
+
+  if (distanciaIzq < DISTANCIA_MINIMA &&
+      distanciaDer < DISTANCIA_MINIMA) {
+
+    Serial.println(
+      "OBSTACULO EN AMBOS LADOS"
+    );
+
+    steeringServo.write(90);
+
+    anguloServo = 90;
+
+    return;
+  }
+
+
+  // ===================================================
+  // NO HAY OBSTÁCULOS -> CENTRAR SERVO
+  // ===================================================
+
+  if (anguloServo != ANGULO_CENTRO) {
+
+    steeringServo.write(ANGULO_CENTRO);
+
+    anguloServo = ANGULO_CENTRO;
+
+    Serial.println("CAMINO LIBRE -> CENTRANDO SERVO");
+  }
 }
 
 
 // =====================================================
-// MOTOR
+// MOTOR - AVANZAR
 // =====================================================
 
 void avanzar(int velocidad) {
@@ -278,7 +288,7 @@ void avanzar(int velocidad) {
 
 
 // =====================================================
-// REVERSA
+// MOTOR - REVERSA
 // =====================================================
 
 void reversa(int velocidad) {
@@ -292,7 +302,7 @@ void reversa(int velocidad) {
 
 
 // =====================================================
-// PARAR MOTOR
+// MOTOR - PARAR
 // =====================================================
 
 void pararMotor() {
@@ -318,12 +328,11 @@ void moverServoSuave(int objetivo) {
     else if (anguloServo < objetivo) {
 
       anguloServo++;
-
     }
 
     steeringServo.write(anguloServo);
 
-    delay(5);
+    delay(4);
   }
 }
 
@@ -351,7 +360,9 @@ void leerHuskyLens() {
       huskylens.read();
 
 
+    // =================================================
     // ID2 = AZUL
+    // =================================================
 
     if (resultado.ID == 2) {
 
@@ -359,7 +370,9 @@ void leerHuskyLens() {
     }
 
 
+    // =================================================
     // ID4 = NARANJA
+    // =================================================
 
     if (resultado.ID == 4) {
 
@@ -369,7 +382,7 @@ void leerHuskyLens() {
 
 
   // ===================================================
-  // ID2
+  // AZUL / ID2
   // ===================================================
 
   if (estado == RECTO && encontroID2) {
@@ -379,13 +392,12 @@ void leerHuskyLens() {
     Serial.println("ID2 AZUL DETECTADO");
     Serial.println("==============================");
 
-
     estado = GIRO_INICIAL;
   }
 
 
   // ===================================================
-  // ID4
+  // NARANJA / ID4
   // ===================================================
 
   else if (estado == BUSCANDO_ID4 && encontroID4) {
@@ -394,7 +406,6 @@ void leerHuskyLens() {
     Serial.println("==============================");
     Serial.println("ID4 NARANJA DETECTADO");
     Serial.println("==============================");
-
 
     estado = SEGUNDO_GIRO;
   }
@@ -442,11 +453,9 @@ void setup() {
 
   pinMode(ECHO_IZQ, INPUT);
 
-
   pinMode(TRIG_DER, OUTPUT);
 
   pinMode(ECHO_DER, INPUT);
-
 
   digitalWrite(TRIG_IZQ, LOW);
 
@@ -462,7 +471,9 @@ void setup() {
 
   while (!huskylens.begin(Wire)) {
 
-    Serial.println("Error conectando HuskyLens");
+    Serial.println(
+      "Error conectando HuskyLens"
+    );
 
     delay(1000);
   }
@@ -470,8 +481,8 @@ void setup() {
 
   Serial.println();
   Serial.println("==============================");
-  Serial.println("HuskyLens conectado");
-  Serial.println("2 HC-SR04 activos");
+  Serial.println("HUSKYLENS CONECTADO");
+  Serial.println("2 HC-SR04 ACTIVOS");
   Serial.println("==============================");
 
   delay(500);
@@ -491,35 +502,29 @@ void loop() {
 
   if (estado == RECTO) {
 
-    // -------------------------------------------------
-    // Primero revisar obstáculos laterales
-    // -------------------------------------------------
-
-    bool huboCorreccion =
-      corregirObstaculo();
-
 
     // -------------------------------------------------
-    // Si no hubo obstáculo, mantener dirección recta
+    // ULTRASÓNICOS
     // -------------------------------------------------
 
-    if (!huboCorreccion) {
+    if (millis() - ultimoUltrasonico >=
+        INTERVALO_ULTRASONICOS) {
 
-      steeringServo.write(ANGULO_CENTRO);
+      ultimoUltrasonico = millis();
 
-      anguloServo = ANGULO_CENTRO;
+      controlarUltrasonicos();
     }
 
 
     // -------------------------------------------------
-    // Avanzar
+    // AVANZAR
     // -------------------------------------------------
 
     avanzar(VEL_RECTA);
 
 
     // -------------------------------------------------
-    // Buscar ID2
+    // BUSCAR AZUL
     // -------------------------------------------------
 
     leerHuskyLens();
@@ -527,38 +532,42 @@ void loop() {
 
 
   // ===================================================
-  // ID2 DETECTADO
-  // ===================================================
-  //
-  // 1. Parar
-  // 2. Servo 90 → 45
-  // 3. Avanzar
-  // 4. Empezar temporizador de 3 segundos
-  //
+  // AZUL / ID2
   // ===================================================
 
   else if (estado == GIRO_INICIAL) {
 
-    Serial.println("ID2 -> iniciar giro");
+    Serial.println(
+      "ID2 -> INICIANDO GIRO"
+    );
 
 
+    // Parar
     pararMotor();
 
     delay(100);
 
 
-    Serial.println("Servo 90 -> 45");
+    // Girar servo
+    Serial.println(
+      "SERVO 90 -> 45"
+    );
 
-    moverServoSuave(ANGULO_PRIMER_GIRO);
+    moverServoSuave(
+      ANGULO_PRIMER_GIRO
+    );
 
 
-    // Empezar el temporizador
+    // Empezar contador
     tiempoEstado = millis();
 
 
-    Serial.println("Buscando ID4 durante 3 segundos");
+    Serial.println(
+      "BUSCANDO ID4 DURANTE 3 SEGUNDOS"
+    );
 
 
+    // Avanzar con servo a 45°
     avanzar(VEL_GIRO);
 
 
@@ -567,23 +576,22 @@ void loop() {
 
 
   // ===================================================
-  // BUSCAR ID4
-  // ===================================================
-  //
-  // El robot continúa avanzando con el servo a 45°.
-  //
-  // Si encuentra ID4:
-  //
-  //     SEGUNDO_GIRO
-  //
-  // Si pasan 3 segundos:
-  //
-  //     RECUPERACION
-  //
+  // BUSCANDO NARANJA / ID4
   // ===================================================
 
   else if (estado == BUSCANDO_ID4) {
 
+
+    // Mantener 45°
+    steeringServo.write(
+      ANGULO_PRIMER_GIRO
+    );
+
+    anguloServo =
+      ANGULO_PRIMER_GIRO;
+
+
+    // Avanzar
     avanzar(VEL_GIRO);
 
 
@@ -592,7 +600,8 @@ void loop() {
 
 
     // -------------------------------------------------
-    // Comprobar timeout
+    // Si todavía no encontró ID4,
+    // revisar los 3 segundos.
     // -------------------------------------------------
 
     if (estado == BUSCANDO_ID4) {
@@ -614,16 +623,14 @@ void loop() {
 
 
   // ===================================================
-  // ID4 DETECTADO
-  // ===================================================
-  //
-  // 45° → 25°
-  //
+  // NARANJA / ID4
   // ===================================================
 
   else if (estado == SEGUNDO_GIRO) {
 
-    Serial.println("ID4 -> segundo giro");
+    Serial.println(
+      "ID4 -> SEGUNDO GIRO"
+    );
 
 
     pararMotor();
@@ -631,9 +638,13 @@ void loop() {
     delay(100);
 
 
-    Serial.println("Servo 45 -> 25");
+    Serial.println(
+      "SERVO 45 -> 25"
+    );
 
-    moverServoSuave(ANGULO_SEGUNDO_GIRO);
+    moverServoSuave(
+      ANGULO_SEGUNDO_GIRO
+    );
 
 
     tiempoEstado = millis();
@@ -644,17 +655,30 @@ void loop() {
 
 
   // ===================================================
-  // MANTENER 25°
+  // MANTENER SEGUNDO GIRO
   // ===================================================
 
   else if (estado == MANTENER_GIRO) {
 
+
+    // Mantener exactamente 25°
+    steeringServo.write(
+      ANGULO_SEGUNDO_GIRO
+    );
+
+    anguloServo =
+      ANGULO_SEGUNDO_GIRO;
+
+
     avanzar(VEL_GIRO);
 
 
+    // Mantener 300 ms
     if (millis() - tiempoEstado >= 300) {
 
-      Serial.println("Segundo giro terminado");
+      Serial.println(
+        "SEGUNDO GIRO TERMINADO"
+      );
 
 
       pararMotor();
@@ -666,18 +690,24 @@ void loop() {
 
 
   // ===================================================
-  // REGRESAR AL CENTRO
+  // REGRESAR A CENTRO
   // ===================================================
 
   else if (estado == REGRESANDO) {
 
-    Serial.println("Regresando servo a 90");
+    Serial.println(
+      "REGRESANDO SERVO A 90"
+    );
 
 
-    moverServoSuave(ANGULO_CENTRO);
+    moverServoSuave(
+      ANGULO_CENTRO
+    );
 
 
-    Serial.println("Continuando recto");
+    Serial.println(
+      "CONTINUANDO RECTO"
+    );
 
 
     estado = RECTO;
@@ -690,34 +720,18 @@ void loop() {
   // ===================================================
   // RECUPERACIÓN
   // ===================================================
-  //
-  // No encontró ID4 después de ~3 segundos.
-  //
-  // Queremos:
-  //
-  //       PARAR
-  //          ↓
-  //       REVERSA
-  //          ↓
-  //  dirección hacia la derecha
-  //          ↓
-  //       retroceder
-  //          ↓
-  //       centrar
-  //          ↓
-  //       avanzar
-  //
-  // ===================================================
 
   else if (estado == RECUPERACION) {
 
     Serial.println();
+    Serial.println("==============================");
     Serial.println("RECUPERACION");
-    Serial.println("Retrocediendo hacia la derecha");
+    Serial.println("RETROCEDIENDO HACIA LA DERECHA");
+    Serial.println("==============================");
 
 
     // -------------------------------------------------
-    // Parar
+    // PARAR
     // -------------------------------------------------
 
     pararMotor();
@@ -726,14 +740,14 @@ void loop() {
 
 
     // -------------------------------------------------
-    // Dirección hacia la DERECHA
+    // GIRAR DIRECCIÓN HACIA DERECHA
     // -------------------------------------------------
 
     moverServoSuave(115);
 
 
     // -------------------------------------------------
-    // Retroceder
+    // REVERSA
     // -------------------------------------------------
 
     reversa(VEL_REVERSA);
@@ -744,22 +758,24 @@ void loop() {
 
 
     // -------------------------------------------------
-    // Retroceder durante el tiempo definido
+    // RETROCEDER 1.8 SEGUNDOS
     // -------------------------------------------------
 
     while (millis() - inicioReversa <
            TIEMPO_REVERSA) {
 
-      // Mantener dirección hacia derecha
 
+      // Mantener dirección hacia derecha
       steeringServo.write(115);
 
-      delay(5);
+      anguloServo = 115;
+
+      delay(2);
     }
 
 
     // -------------------------------------------------
-    // Parar
+    // PARAR
     // -------------------------------------------------
 
     pararMotor();
@@ -768,19 +784,26 @@ void loop() {
 
 
     // -------------------------------------------------
-    // Centrar dirección
+    // CENTRAR
     // -------------------------------------------------
 
-    Serial.println("Centrando servo");
+    Serial.println(
+      "CENTRANDO SERVO"
+    );
 
-    moverServoSuave(ANGULO_CENTRO);
+    moverServoSuave(
+      ANGULO_CENTRO
+    );
 
 
     // -------------------------------------------------
-    // Volver a avanzar
+    // CONTINUAR
     // -------------------------------------------------
 
-    Serial.println("Recuperacion terminada");
+    Serial.println(
+      "RECUPERACION TERMINADA"
+    );
+
 
     estado = RECTO;
 
@@ -788,5 +811,5 @@ void loop() {
   }
 
 
-  delay(5);
+  delay(2);
 }
